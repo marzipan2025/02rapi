@@ -1,0 +1,16 @@
+# macOS
+.DS_Store
+
+# Xcode user state
+**/xcuserdata/
+**/*.xcuserstate
+
+# Build outputs
+build/
+DerivedData/
+
+# Release artifacts (배포는 GitHub Release 로)
+*.dmg
+
+# 외부 자산 (makedmg.sh 가 ~/Downloads/02rapiWallp.png 를 사용)
+02rapiWallp.png

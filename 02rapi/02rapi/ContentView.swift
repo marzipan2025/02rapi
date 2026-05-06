@@ -746,40 +746,67 @@ final class MpvRadioPlayer: ObservableObject, @unchecked Sendable {
     private var channels: [RadioChannel: OpaquePointer] = [:]
     // 마지막으로 적용한 pan 값 (양자화된). 변화 없으면 필터 리로드 생략.
     private var currentPans: [RadioChannel: Float] = [:]
+    // pan 필터 마지막 갱신 시각 (스로틀링). af 그래프 재빌드는 비용이 크므로 빈도 제한.
+    private var lastPanUpdate: [RadioChannel: CFAbsoluteTime] = [:]
     private var loading: Set<RadioChannel> = []
+    // 로딩 중 도착한 최신 목표값. startPlayback 시점에 이걸 적용해
+    // 진입 시점의 스테일 값이 아닌 현재 위치의 볼륨/팬으로 재생을 시작.
+    private var pendingTargets: [RadioChannel: (volume: Float, pan: Float)] = [:]
     private let lib = MpvLib.shared
+
+    // pan 필터 재빌드 최소 간격. 60ms = 최대 ~16Hz 재빌드 빈도.
+    private let panUpdateInterval: CFAbsoluteTime = 0.060
 
     func play(channel: RadioChannel, volume: Float, pan: Float) {
         guard lib.available else { return }
 
         if let mpv = channels[channel] {
-            // 볼륨은 매 프레임 부드럽게 업데이트
+            // 볼륨은 매 프레임 부드럽게 업데이트 (mpv soft property, 그래프 재빌드 없음)
             setVolume(mpv, volume: Double(volume * 100))
 
-            // pan은 0.02 단위로 양자화 → 필터 리로드 빈도 축소
-            let quantized = (pan * 50).rounded() / 50
+            // pan 은 0.05 단위로 양자화 + 60ms 스로틀.
+            // af=lavfi=[pan=...] 갱신은 mpv 내부에서 audio filter graph 를 재빌드해
+            // 매 호출마다 미세한 audio dropout 이 생김. 빈도를 낮춰 글리치 억제.
+            let quantized = (pan * 20).rounded() / 20
             if currentPans[channel] != quantized {
-                currentPans[channel] = quantized
-                updatePanFilter(mpv, pan: quantized)
+                let now = CFAbsoluteTimeGetCurrent()
+                let last = lastPanUpdate[channel] ?? 0
+                if now - last >= panUpdateInterval {
+                    currentPans[channel] = quantized
+                    lastPanUpdate[channel] = now
+                    updatePanFilter(mpv, pan: quantized)
+                }
+                // 스로틀로 드롭된 갱신은 다음 onChanged 호출에서 자연스럽게 따라잡음.
             }
-        } else if !loading.contains(channel) {
+        } else if loading.contains(channel) {
+            // 로딩 중 — 최신 목표값만 기록해 두고 startPlayback 에서 사용
+            pendingTargets[channel] = (volume, pan)
+        } else {
             loading.insert(channel)
+            pendingTargets[channel] = (volume, pan)
             Task {
                 do {
                     let url = try await channel.resolveStreamURL()
                     await MainActor.run {
-                        self.startPlayback(channel: channel, url: url.absoluteString, volume: volume, pan: pan)
+                        let target = self.pendingTargets[channel] ?? (volume, pan)
+                        self.pendingTargets[channel] = nil
+                        self.startPlayback(channel: channel, url: url.absoluteString, volume: target.volume, pan: target.pan)
                         self.loading.remove(channel)
                     }
                 } catch {
                     print("Stream error [\(channel)]: \(error)")
-                    await MainActor.run { self.loading.remove(channel) }
+                    await MainActor.run {
+                        self.pendingTargets[channel] = nil
+                        self.loading.remove(channel)
+                    }
                 }
             }
         }
     }
 
     func stop(channel: RadioChannel) {
+        pendingTargets[channel] = nil
+        lastPanUpdate[channel] = nil
         guard let mpv = channels[channel] else { return }
         lib.destroy(mpv)
         channels[channel] = nil
