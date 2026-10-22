@@ -172,8 +172,9 @@ struct ContentView: View {
     @State private var updateDragStart: CGPoint?
     @State private var updateFlowDone = false
     // 오픈 인트로: 채널 버튼 3개는 숨긴 채 시작해 디졸브 + 떠오르기로 등장
-    @State private var channelsOpacity: Double = 0
-    @State private var channelsRise: CGFloat = 12
+    // (슬롯별: 왼쪽 버튼부터 0.1초 간격으로 차례로 시작)
+    @State private var channelsOpacity: [Double] = [0, 0, 0]
+    @State private var channelsRise: [CGFloat] = [12, 12, 12]
 
     @State private var isOnTop = false
     @AppStorage("glassEffectEnabled_v103") private var useGlassEffect: Bool = true
@@ -244,15 +245,27 @@ struct ContentView: View {
                 .position(portalCenter)
                 .allowsHitTesting(false)
 
-            // 다운로드·설치 중: 포털이 흰색으로 천천히 점멸 (1.6초 주기)
+            // 다운로드·설치 중: 포털이 흰색으로 묵직하게 점멸 (2.8초 주기).
+            // 아래층에 원 경계 밖으로 50px 블러가 퍼지는 글로우(최대 0.2)가 같은 호흡으로 함께 점멸.
             if updatePhase == .installing {
                 TimelineView(.animation) { timeline in
                     let t = timeline.date.timeIntervalSinceReferenceDate
-                    Circle()
-                        .fill(Color.white)
-                        .opacity(0.6 * (1 - cos(t * 2 * .pi / 1.6)) / 2)
-                        .frame(width: portalRadius * 2, height: portalRadius * 2)
-                        .position(portalCenter)
+                    let wave = (1 - cos(t * 2 * .pi / 2.8)) / 2
+                    // smoothstep: 바닥과 정점에서 오래 머물고 중간을 지나가는 묵직한 호흡
+                    let breath = wave * wave * (3 - 2 * wave)
+                    ZStack {
+                        Circle()
+                            .fill(Color.white)
+                            .frame(width: portalRadius * 2, height: portalRadius * 2)
+                            .blur(radius: 50)
+                            .opacity(0.2 * breath)
+                            .position(portalCenter)
+                        Circle()
+                            .fill(Color.white)
+                            .opacity(0.6 * breath)
+                            .frame(width: portalRadius * 2, height: portalRadius * 2)
+                            .position(portalCenter)
+                    }
                 }
                 .allowsHitTesting(false)
             }
@@ -286,10 +299,10 @@ struct ContentView: View {
 
             ForEach(0..<3, id: \.self) { index in
                 channelButton(at: index)
+                    .opacity(channelsOpacity[index])
+                    .offset(y: channelsRise[index])
+                    .allowsHitTesting(channelsOpacity[index] == 1)
             }
-            .opacity(channelsOpacity)
-            .offset(y: channelsRise)
-            .allowsHitTesting(channelsOpacity == 1)
 
             if updatePhase != .none {
                 updateButton
@@ -486,8 +499,8 @@ struct ContentView: View {
         // 업데이트가 있으면 주파수 버튼은 숨기고 Update 버튼만 남긴다
         for slot in slots { radio.stop(channel: slot.channel) }
         withAnimation(.easeOut(duration: 0.3)) {
-            channelsOpacity = 0
-            channelsRise = 12
+            channelsOpacity = [0, 0, 0]
+            channelsRise = [12, 12, 12]
         }
         await popUpdateButton(.offered)
 
@@ -547,11 +560,15 @@ struct ContentView: View {
     }
 
     // 오픈 인트로: 채널 버튼 3개가 디졸브되며 떠오름. (await 는 시작만 기다림)
+    // 왼쪽 버튼부터 0.1초 간격으로 모션 시작 (앞 버튼이 끝나길 기다리지 않고 겹쳐서 진행).
     private func playIntro() async throws {
         try await Task.sleep(nanoseconds: 300_000_000)
-        withAnimation(.easeOut(duration: 0.8)) {
-            channelsOpacity = 1
-            channelsRise = 0
+        let leftToRight = slots.indices.sorted { slots[$0].position.x < slots[$1].position.x }
+        for (order, index) in leftToRight.enumerated() {
+            withAnimation(.easeOut(duration: 0.8).delay(0.1 * Double(order))) {
+                channelsOpacity[index] = 1
+                channelsRise[index] = 0
+            }
         }
     }
 
@@ -837,7 +854,7 @@ private struct UpdateBlob: View, @preconcurrency Animatable {
                     .fill(Color.white)
                     .frame(width: diameter, height: diameter)
                     .blur(radius: 20)
-                    .opacity(0.4)
+                    .opacity(0.28)  // 채널 블러(0.4)의 70%
                     .position(ref)
             }
         }
