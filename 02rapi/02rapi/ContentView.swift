@@ -1,4 +1,5 @@
 import SwiftUI
+import AVFoundation
 
 // MARK: - Channel
 
@@ -222,6 +223,47 @@ struct ContentView: View {
         sound.play()
     }
 
+    // Update / Updated 등장음: 허밍과 같은 A장조 말렛 (직접 합성, 파일 자체 음량으로 재생)
+    private let updatePopSound: NSSound? = {
+        guard let url = Bundle.main.url(forResource: "update_pop", withExtension: "wav") else { return nil }
+        return NSSound(contentsOf: url, byReference: true)
+    }()
+    private let updatedPopSound: NSSound? = {
+        guard let url = Bundle.main.url(forResource: "updated_pop", withExtension: "wav") else { return nil }
+        return NSSound(contentsOf: url, byReference: true)
+    }()
+
+    private func playUpdatePop(_ phase: UpdatePhase) {
+        guard let sound = phase == .updated ? updatedPopSound : updatePopSound else { return }
+        sound.stop()
+        sound.play()
+    }
+
+    // 설치 중 점멸에 맞춘 허밍 루프 (update_hum.wav: 14초 = 점멸 2.8초 × 5, 이음새 없음)
+    @State private var humPlayer: AVAudioPlayer?
+
+    private func startHum() {
+        guard humPlayer == nil,
+              let url = Bundle.main.url(forResource: "update_hum", withExtension: "wav"),
+              let player = try? AVAudioPlayer(contentsOf: url) else { return }
+        player.numberOfLoops = -1
+        player.volume = 0
+        player.prepareToPlay()
+        // 점멸은 기준 시각(timeIntervalSinceReferenceDate)으로 위상을 잡으므로 같은 시각으로 재생 위치를 맞춘다
+        player.currentTime = Date().timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: player.duration)
+        player.play()
+        player.setVolume(1, fadeDuration: 1.0)
+        humPlayer = player
+    }
+
+    private func stopHum(fade: TimeInterval) async {
+        guard let player = humPlayer else { return }
+        humPlayer = nil
+        player.setVolume(0, fadeDuration: fade)
+        try? await Task.sleep(nanoseconds: UInt64(fade * 1_000_000_000))
+        player.stop()
+    }
+
     private var hasMoved: Bool {
         slots != Self.initialSlots || hiddenQueue != Self.initialHiddenQueue
     }
@@ -331,6 +373,13 @@ struct ContentView: View {
         .ignoresSafeArea()
         .onAppear { loadPersistedState() }
         .task { await startUpdateFlow() }
+        .onChange(of: updatePhase) { old, new in
+            if new == .installing {
+                startHum()
+            } else if old == .installing {
+                Task { await stopHum(fade: 0.6) }
+            }
+        }
         .onReceive(NotificationCenter.default.publisher(for: .restoreDefaults)) { _ in
             restoreDefaults()
         }
@@ -525,7 +574,7 @@ struct ContentView: View {
         }
         // 시작 좌표가 한 프레임 그려진 뒤에 애니메이션 시작
         try? await Task.sleep(nanoseconds: 30_000_000)
-        playPop()
+        playUpdatePop(phase)
         withAnimation(.spring(response: 0.45, dampingFraction: 0.62)) {
             updatePos = updateRestPos
         }
@@ -550,6 +599,8 @@ struct ContentView: View {
         Task { @MainActor in
             do {
                 let installed = try await AppUpdater.downloadAndInstall(release)
+                // 새 앱을 켜기 전에 허밍을 0까지 줄인다
+                await stopHum(fade: 0.8)
                 AppUpdater.relaunch(bundle: installed.bundle, leftover: installed.leftover, version: release.version)
             } catch {
                 // 실패하면 Update 버튼이 다시 튀어나와 재시도할 수 있게 한다
