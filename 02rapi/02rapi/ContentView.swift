@@ -246,7 +246,7 @@ struct ContentView: View {
                 .allowsHitTesting(false)
 
             // 다운로드·설치 중: 포털이 흰색으로 묵직하게 점멸 (2.8초 주기).
-            // 아래층에 원 경계 밖으로 50px 블러가 퍼지는 글로우(최대 0.2)가 같은 호흡으로 함께 점멸.
+            // 아래층에 원 경계 밖으로 45px 블러가 퍼지는 글로우(지름 230, 최대 0.4)가 같은 호흡으로 함께 점멸.
             if updatePhase == .installing {
                 TimelineView(.animation) { timeline in
                     let t = timeline.date.timeIntervalSinceReferenceDate
@@ -256,13 +256,13 @@ struct ContentView: View {
                     ZStack {
                         Circle()
                             .fill(Color.white)
-                            .frame(width: portalRadius * 2, height: portalRadius * 2)
-                            .blur(radius: 50)
-                            .opacity(0.2 * breath)
+                            .frame(width: portalRadius * 2 - 10, height: portalRadius * 2 - 10)
+                            .blur(radius: 45)
+                            .opacity(0.4 * breath)
                             .position(portalCenter)
                         Circle()
                             .fill(Color.white)
-                            .opacity(0.6 * breath)
+                            .opacity(0.7 * breath)  // 아래 글로우와 겹쳐 최대 약 0.75
                             .frame(width: portalRadius * 2, height: portalRadius * 2)
                             .position(portalCenter)
                     }
