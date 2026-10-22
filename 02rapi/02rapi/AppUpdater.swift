@@ -100,11 +100,11 @@ enum AppUpdater {
             try fm.createDirectory(at: staging, withIntermediateDirectories: true)
             try await run("/usr/bin/ditto", [mount.appendingPathComponent(appName).path, staged.path])
         } catch {
-            try? await run("/usr/bin/hdiutil", ["detach", mount.path, "-force"])
+            await detach(mount)
             try? fm.removeItem(at: staging)
             throw error
         }
-        try? await run("/usr/bin/hdiutil", ["detach", mount.path, "-force"])
+        await detach(mount)
 
         do {
             // 4. 다른 앱이 섞여 들어오지 않았는지 번들 ID 확인
@@ -139,6 +139,14 @@ enum AppUpdater {
         guard let v = UserDefaults.standard.string(forKey: updatedKey) else { return false }
         UserDefaults.standard.removeObject(forKey: updatedKey)
         return v == currentVersion
+    }
+
+    // 분리가 한 번에 안 되면 디스크 이미지가 계속 붙어 남으므로 몇 번 더 시도한다.
+    private static func detach(_ mount: URL) async {
+        for attempt in 0..<3 {
+            if (try? await run("/usr/bin/hdiutil", ["detach", mount.path, "-force"])) != nil { return }
+            try? await Task.sleep(nanoseconds: UInt64(attempt + 1) * 500_000_000)
+        }
     }
 
     private static func run(_ path: String, _ args: [String]) async throws {
