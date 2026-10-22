@@ -76,6 +76,7 @@ hdiutil create \
 MOUNT_DIR=$(hdiutil attach "$TEMP_DIR/temp.dmg" | grep "/Volumes/" | awk '{print $3}')
 echo "Mounted: $MOUNT_DIR"
 
+decorate_window() {
 osascript <<APPLESCRIPT
 tell application "Finder"
     tell disk "$VOL_NAME"
@@ -98,6 +99,30 @@ tell application "Finder"
     end tell
 end tell
 APPLESCRIPT
+}
+
+# 마운트 직후엔 Finder 가 아직 디스크를 몰라 'disk "02rapi"을(를) 가져올 수 없습니다 (-1728)'
+# 로 실패할 때가 있다. 디스크가 보일 때까지 기다리고, 꾸미기도 몇 번 다시 시도한다.
+for i in 1 2 3 4 5 6 7 8 9 10; do
+    osascript -e "tell application \"Finder\" to exists disk \"$VOL_NAME\"" 2>/dev/null | grep -q true && break
+    sleep 0.5
+done
+
+decorate_ok=0
+for attempt in 1 2 3; do
+    if decorate_window; then
+        decorate_ok=1
+        break
+    fi
+    echo "Finder 창 꾸미기 실패 (시도 $attempt/3) — 2초 후 다시"
+    sleep 2
+done
+if [ $decorate_ok -eq 0 ]; then
+    echo "Error: Finder 창 꾸미기에 계속 실패 — 마운트 정리 후 중단"
+    hdiutil detach "$MOUNT_DIR" -force >/dev/null 2>&1 || true
+    rm -rf "$TEMP_DIR"
+    exit 1
+fi
 
 # 6. 언마운트 — Finder가 핸들 놓을 때까지 재시도, 끝내 강제 언마운트
 sync

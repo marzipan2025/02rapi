@@ -39,7 +39,8 @@ hdiutil detach /tmp/02rapi-bg/mnt
    ditto /tmp/02rapi.xcarchive/Products/Applications/02rapi.app "$D/02rapi.app"
    ```
 3. `./bundle.sh` (libmpv 번들 + 재서명) → `./makedmg.sh` (→ `02rapi/02rapi.dmg`, gitignore 됨).
-   `makedmg.sh` 가 Finder 오류로 실패하면 `hdiutil info` 로 남은 `02rapi` 이미지를 확인해
+   마운트 직후 Finder 가 디스크를 못 찾는 오류(-1728)는 스크립트가 기다렸다가 3번까지 다시 시도한다.
+   그래도 실패하면 `hdiutil info` 로 남은 `02rapi` 이미지를 확인해
    `hdiutil detach /dev/diskN -force` 로 분리한 뒤 다시 실행.
 4. 태그·릴리스:
    ```bash
