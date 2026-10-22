@@ -961,7 +961,7 @@ private struct BlobLensEffect: ViewModifier {
                 .float2(center),
                 .float(radius),
                 .float(0.3),     // 굴절 강도: 중심 약 1.4배 확대
-                .float(0.035)    // 색수차: 가장자리에서 약 4px
+                .float(0.14)     // 색수차: 가장자리 약 17px, 안쪽에서도 약 5px
             ),
             maxSampleOffset: CGSize(width: 48, height: 48)
         )
