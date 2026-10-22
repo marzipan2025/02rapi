@@ -518,12 +518,17 @@ struct ContentView: View {
             )
     }
 
+    private enum EarlyCheck: Sendable { case done(AppRelease?), timedOut }
+    // 실행 시 업데이트 확인을 기다리는 최대 시간 (이후엔 인트로부터)
+    private static let updateCheckWait: UInt64 = 2_500_000_000
+
     private func updateRef(_ pos: CGPoint) -> CGPoint {
         CGPoint(x: pos.x + refInUpdateBtn.x, y: pos.y + refInUpdateBtn.y)
     }
 
     // 실행 직후: 업데이트 직후라면 Updated 연출 → 오픈 인트로,
-    // 아니면 오픈 인트로와 함께 새 버전 확인 → 있으면 Update 버튼 등장.
+    // 아니면 새 버전부터 확인 → 있으면 주파수 버튼 없이 Update 버튼만, 없으면 오픈 인트로.
+    // 네트워크가 느리면 인트로가 늦어지지 않도록 확인은 최대 updateCheckWait 까지만 기다린다.
     // 실행 직후 창 스타일이 바뀌면서 뷰가 한 번 사라졌다 나타나 .task 가 취소·재시작된다.
     // 취소된 쪽은 곧바로 빠지고, 끝까지 간 흐름은 updateFlowDone 으로 한 번만 돌게 한다.
     private func startUpdateFlow() async {
@@ -536,18 +541,43 @@ struct ContentView: View {
             updateFlowDone = true
             return
         }
-        do { try await playIntro() } catch { return }
-        let release = await AppUpdater.checkForUpdate()
-        if Task.isCancelled { return }
+        let check = Task { await AppUpdater.checkForUpdate() }
+        let early = await withTaskGroup(of: EarlyCheck.self) { group in
+            group.addTask { .done(await check.value) }
+            group.addTask {
+                try? await Task.sleep(nanoseconds: Self.updateCheckWait)
+                return .timedOut
+            }
+            let first = await group.next() ?? .timedOut
+            group.cancelAll()
+            return first
+        }
+        if Task.isCancelled { check.cancel(); return }
+
+        let release: AppRelease?
+        switch early {
+        case .done(let r):
+            release = r
+            if release == nil {
+                do { try await playIntro() } catch { return }
+            }
+        case .timedOut:
+            // 확인이 늦으면 인트로를 먼저 보여 주고, 나중에 업데이트가 확인되면 버튼을 숨긴다
+            do { try await playIntro() } catch { check.cancel(); return }
+            release = await check.value
+            if Task.isCancelled { return }
+            if release != nil {
+                for slot in slots { radio.stop(channel: slot.channel) }
+                withAnimation(.easeOut(duration: 0.3)) {
+                    channelsOpacity = [0, 0, 0]
+                    channelsRise = [12, 12, 12]
+                }
+            }
+        }
         updateFlowDone = true
         guard let release else { return }
         updateRelease = release
-        // 업데이트가 있으면 주파수 버튼은 숨기고 Update 버튼만 남긴다
-        for slot in slots { radio.stop(channel: slot.channel) }
-        withAnimation(.easeOut(duration: 0.3)) {
-            channelsOpacity = [0, 0, 0]
-            channelsRise = [12, 12, 12]
-        }
+        // 업데이트가 있으면 주파수 버튼 없이 Update 버튼만
         await popUpdateButton(.offered)
 
         #if DEBUG
