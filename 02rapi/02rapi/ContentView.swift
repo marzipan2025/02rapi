@@ -178,7 +178,15 @@ struct ContentView: View {
     @State private var channelsRise: [CGFloat] = [12, 12, 12]
 
     @State private var isOnTop = false
-    @AppStorage("glassEffectEnabled_v103") private var useGlassEffect: Bool = true
+    // ⌘G 로 순환하는 유리 모드: 창 Liquid Glass → 창 머티리얼 → 창 Liquid Glass + 소리원 유리
+    private enum GlassMode: Int, CaseIterable {
+        case glass, material, glassWithSound
+    }
+    @AppStorage("glassEffectEnabled_v103") private var useGlassEffect: Bool = true  // 1.1.0 이하의 설정 (이전용)
+    @AppStorage("glassMode_v111") private var glassModeRaw: Int = -1
+    private var glassMode: GlassMode {
+        GlassMode(rawValue: glassModeRaw) ?? (useGlassEffect ? .glass : .material)
+    }
 
     @StateObject private var radio = MpvRadioPlayer()
 
@@ -312,6 +320,16 @@ struct ContentView: View {
             blobsCanvas
                 .allowsHitTesting(false)
 
+            // 소리원 위에 맑은 Liquid Glass 한 겹 (렌즈 셰이더 굴절·색수차는 그 아래에 그대로)
+            if glassMode == .glassWithSound {
+                Circle()
+                    .fill(Color.clear)
+                    .frame(width: soundRadius * 2, height: soundRadius * 2)
+                    .glassEffect(.clear, in: Circle())
+                    .position(soundCenter)
+                    .allowsHitTesting(false)
+            }
+
             if updatePhase != .none {
                 UpdateBlob(ref: updateRef(updatePos), soundCenter: soundCenter, soundRadius: soundRadius)
                     .opacity(updateOpacity)
@@ -366,7 +384,7 @@ struct ContentView: View {
             .position(x: 298, y: 22)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .modifier(ConditionalGlassEffect(useGlass: useGlassEffect))
+        .modifier(ConditionalGlassEffect(useGlass: glassMode != .material))
         .ignoresSafeArea()
         .onAppear { loadPersistedState() }
         .task { await startUpdateFlow() }
@@ -384,7 +402,7 @@ struct ContentView: View {
             toggleOnTop()
         }
         .onReceive(NotificationCenter.default.publisher(for: .toggleGlassEffect)) { _ in
-            useGlassEffect.toggle()
+            glassModeRaw = (glassMode.rawValue + 1) % GlassMode.allCases.count
         }
     }
 
