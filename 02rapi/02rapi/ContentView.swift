@@ -182,10 +182,16 @@ struct ContentView: View {
     private enum GlassMode: Int, CaseIterable {
         case glass, material, glassWithSound
     }
-    @AppStorage("glassEffectEnabled_v103") private var useGlassEffect: Bool = true  // 1.1.0 이하의 설정 (이전용)
-    @AppStorage("glassMode_v111") private var glassModeRaw: Int = -1
+    // 이전 버전들의 설정 (이전용): 1.1.0 이하 on/off, 1.1.1 모드
+    @AppStorage("glassEffectEnabled_v103") private var useGlassEffect: Bool = true
+    @AppStorage("glassMode_v111") private var legacyGlassModeRaw: Int = -1
+    @AppStorage("glassMode_v112") private var glassModeRaw: Int = -1
+    // 1.1.2 부터 소리원 유리 모드가 기본. 예전에 머티리얼을 골라 둔 사람만 머티리얼을 유지한다.
     private var glassMode: GlassMode {
-        GlassMode(rawValue: glassModeRaw) ?? (useGlassEffect ? .glass : .material)
+        if let mode = GlassMode(rawValue: glassModeRaw) { return mode }
+        let choseMaterial = legacyGlassModeRaw == GlassMode.material.rawValue
+            || (legacyGlassModeRaw == -1 && !useGlassEffect)
+        return choseMaterial ? .material : .glassWithSound
     }
 
     @StateObject private var radio = MpvRadioPlayer()
