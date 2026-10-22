@@ -264,9 +264,6 @@ struct ContentView: View {
         player.stop()
     }
 
-    private var hasMoved: Bool {
-        slots != Self.initialSlots || hiddenQueue != Self.initialHiddenQueue
-    }
 
     var body: some View {
         ZStack {
@@ -354,7 +351,7 @@ struct ContentView: View {
             Button(action: restoreDefaults) {
                 SVGImage(name: "reloc", fallbackText: "↺", color: Color(red: 0xBE/255.0, green: 0xC2/255.0, blue: 0xD0/255.0), tinted: true)
                     .frame(width: 20, height: 20)
-                    .opacity(hasMoved ? 1.0 : 0.6)
+                    .opacity(0.6)  // 상태 표시 없이 항상 흐리게 (밝기 변화는 OnTop 핀만)
             }
             .buttonStyle(.plain)
             .position(x: 18, y: 22)
