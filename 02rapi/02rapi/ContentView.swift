@@ -159,6 +159,22 @@ struct ContentView: View {
     @State private var isAnimating: [Bool] = [false, false, false]
     @State private var animationTasks: [Task<Void, Never>?] = [nil, nil, nil]
 
+    // 업데이트 버튼 상태
+    private enum UpdatePhase { case none, offered, installing, updated }
+    // 업데이트 후 재실행된 첫 실행인지 (한 번만 소비)
+    private static let justUpdated = AppUpdater.consumeJustUpdated()
+
+    @State private var updatePhase: UpdatePhase = .none
+    @State private var updateRelease: AppRelease?
+    @State private var updatePos: CGPoint = CGPoint(x: 122, y: 220)
+    @State private var updateOpacity: Double = 1
+    @State private var updateSinkOffset: CGFloat = 0
+    @State private var updateDragStart: CGPoint?
+    @State private var updateFlowDone = false
+    // 오픈 인트로: 채널 버튼 3개는 숨긴 채 시작해 디졸브 + 떠오르기로 등장
+    @State private var channelsOpacity: Double = 0
+    @State private var channelsRise: CGFloat = 12
+
     @State private var isOnTop = false
     @AppStorage("glassEffectEnabled_v103") private var useGlassEffect: Bool = true
 
@@ -176,6 +192,16 @@ struct ContentView: View {
     private let lineX: CGFloat = 160
     private let btnSize = CGSize(width: 59, height: 22)
     private let refInBtn = CGPoint(x: 30, y: 17)
+
+    // 업데이트 버튼 (svg 128x36 을 채널 버튼과 같은 배율로 → 76x22, 글자 중심 x=38)
+    private let updateBtnSize = CGSize(width: 76, height: 22)
+    private let refInUpdateBtn = CGPoint(x: 38, y: 17)
+    // 대기 위치: ref 가 소리원 중심선 위, 반지름 1/3 지점에서 12px 위 (160, 41)
+    private var updateRestPos: CGPoint {
+        CGPoint(x: lineX - refInUpdateBtn.x, y: soundCenter.y + soundRadius / 3 - 12 - refInUpdateBtn.y)
+    }
+    // 튀어나오기 시작 위치: 화면 아래 바깥
+    private var updateStartPos: CGPoint { CGPoint(x: updateRestPos.x, y: 220) }
 
     // Phase 1 (빨려내려감) 슬라이드 거리 (offset y +67 → 화면 밖)
     private let sinkOffset: CGFloat = 67
@@ -218,8 +244,27 @@ struct ContentView: View {
                 .position(portalCenter)
                 .allowsHitTesting(false)
 
+            // 다운로드·설치 중: 포털이 흰색으로 천천히 점멸 (1.6초 주기)
+            if updatePhase == .installing {
+                TimelineView(.animation) { timeline in
+                    let t = timeline.date.timeIntervalSinceReferenceDate
+                    Circle()
+                        .fill(Color.white)
+                        .opacity(0.6 * (1 - cos(t * 2 * .pi / 1.6)) / 2)
+                        .frame(width: portalRadius * 2, height: portalRadius * 2)
+                        .position(portalCenter)
+                }
+                .allowsHitTesting(false)
+            }
+
             blobsCanvas
                 .allowsHitTesting(false)
+
+            if updatePhase != .none {
+                UpdateBlob(ref: updateRef(updatePos), soundCenter: soundCenter, soundRadius: soundRadius)
+                    .opacity(updateOpacity)
+                    .allowsHitTesting(false)
+            }
 
             Rectangle()
                 .fill(
@@ -241,6 +286,13 @@ struct ContentView: View {
 
             ForEach(0..<3, id: \.self) { index in
                 channelButton(at: index)
+            }
+            .opacity(channelsOpacity)
+            .offset(y: channelsRise)
+            .allowsHitTesting(channelsOpacity == 1)
+
+            if updatePhase != .none {
+                updateButton
             }
 
             // Reloc button (20,20), 20x20
@@ -265,6 +317,7 @@ struct ContentView: View {
         .modifier(ConditionalGlassEffect(useGlass: useGlassEffect))
         .ignoresSafeArea()
         .onAppear { loadPersistedState() }
+        .task { await startUpdateFlow() }
         .onReceive(NotificationCenter.default.publisher(for: .restoreDefaults)) { _ in
             restoreDefaults()
         }
@@ -379,6 +432,141 @@ struct ContentView: View {
                         handleDragEnd(index: index)
                     }
             )
+    }
+
+    // MARK: Update Button
+
+    private var updateButton: some View {
+        let name = updatePhase == .updated ? "btn_updated" : "btn_update"
+        return SVGImage(name: name, fallbackText: updatePhase == .updated ? "Updated" : "Update", color: .white)
+            .frame(width: updateBtnSize.width, height: updateBtnSize.height)
+            .contentShape(Rectangle())
+            .opacity(updateOpacity)
+            .offset(y: updateSinkOffset)
+            .allowsHitTesting(updatePhase == .offered)
+            .position(x: updatePos.x + updateBtnSize.width / 2, y: updatePos.y + updateBtnSize.height / 2)
+            .gesture(
+                DragGesture()
+                    .onChanged { value in
+                        if updateDragStart == nil { updateDragStart = updatePos }
+                        let start = updateDragStart!
+                        updatePos = clampButtonPosition(
+                            CGPoint(x: start.x + value.translation.width, y: start.y + value.translation.height),
+                            size: updateBtnSize
+                        )
+                    }
+                    .onEnded { _ in handleUpdateDragEnd() }
+            )
+    }
+
+    private func updateRef(_ pos: CGPoint) -> CGPoint {
+        CGPoint(x: pos.x + refInUpdateBtn.x, y: pos.y + refInUpdateBtn.y)
+    }
+
+    // 실행 직후: 업데이트 직후라면 Updated 연출 → 오픈 인트로,
+    // 아니면 오픈 인트로와 함께 새 버전 확인 → 있으면 Update 버튼 등장.
+    // 실행 직후 창 스타일이 바뀌면서 뷰가 한 번 사라졌다 나타나 .task 가 취소·재시작된다.
+    // 취소된 쪽은 곧바로 빠지고, 끝까지 간 흐름은 updateFlowDone 으로 한 번만 돌게 한다.
+    private func startUpdateFlow() async {
+        guard !updateFlowDone else { return }
+        if Self.justUpdated {
+            do {
+                try await playUpdated()
+                try await playIntro()
+            } catch { return }
+            updateFlowDone = true
+            return
+        }
+        do { try await playIntro() } catch { return }
+        let release = await AppUpdater.checkForUpdate()
+        if Task.isCancelled { return }
+        updateFlowDone = true
+        guard let release else { return }
+        updateRelease = release
+        // 업데이트가 있으면 주파수 버튼은 숨기고 Update 버튼만 남긴다
+        for slot in slots { radio.stop(channel: slot.channel) }
+        withAnimation(.easeOut(duration: 0.3)) {
+            channelsOpacity = 0
+            channelsRise = 12
+        }
+        await popUpdateButton(.offered)
+
+        #if DEBUG
+        // 테스트용: RAPI_UPDATE_AUTOINSTALL=1 이면 드래그 없이 바로 설치 시작
+        if ProcessInfo.processInfo.environment["RAPI_UPDATE_AUTOINSTALL"] != nil {
+            try? await Task.sleep(nanoseconds: 1_500_000_000)
+            startInstall(release)
+        }
+        #endif
+    }
+
+    // 화면 아래에서 튀어나와 소리원 1/3 지점에 멈춤 (스프링 오버슛)
+    private func popUpdateButton(_ phase: UpdatePhase) async {
+        var tx = Transaction()
+        tx.disablesAnimations = true
+        withTransaction(tx) {
+            updatePhase = phase
+            updatePos = updateStartPos
+            updateOpacity = 1
+            updateSinkOffset = 0
+        }
+        // 시작 좌표가 한 프레임 그려진 뒤에 애니메이션 시작
+        try? await Task.sleep(nanoseconds: 30_000_000)
+        playPop()
+        withAnimation(.spring(response: 0.45, dampingFraction: 0.62)) {
+            updatePos = updateRestPos
+        }
+    }
+
+    private func handleUpdateDragEnd() {
+        updateDragStart = nil
+        guard updatePhase == .offered, let release = updateRelease,
+              dist(updateRef(updatePos), portalCenter) <= portalRadius else { return }
+        startInstall(release)
+    }
+
+    // 포털에 넣으면: 채널 사이클과 같은 방식으로 빨려 들어가고, 포털 점멸 동안 다운로드·설치.
+    // (주파수 버튼은 Update 버튼이 나올 때 이미 숨겨져 있음)
+    // 성공하면 새 버전으로 재실행 (새 앱이 Updated 연출을 이어서 재생).
+    private func startInstall(_ release: AppRelease) {
+        updatePhase = .installing
+
+        withAnimation(.easeIn(duration: 0.13)) { updateSinkOffset = sinkOffset }
+        withAnimation(.easeIn(duration: 0.065).delay(0.065)) { updateOpacity = 0 }
+
+        Task { @MainActor in
+            do {
+                let installed = try await AppUpdater.downloadAndInstall(release)
+                AppUpdater.relaunch(bundle: installed.bundle, leftover: installed.leftover, version: release.version)
+            } catch {
+                // 실패하면 Update 버튼이 다시 튀어나와 재시도할 수 있게 한다
+                print("Update failed: \(error)")
+                await popUpdateButton(.offered)
+            }
+        }
+    }
+
+    // 오픈 인트로: 채널 버튼 3개가 디졸브되며 떠오름. (await 는 시작만 기다림)
+    private func playIntro() async throws {
+        try await Task.sleep(nanoseconds: 300_000_000)
+        withAnimation(.easeOut(duration: 0.8)) {
+            channelsOpacity = 1
+            channelsRise = 0
+        }
+    }
+
+    // 업데이트 후 첫 실행: Updated 가 아래에서 튀어올라 2초 정지 → 디졸브로 사라짐.
+    // 다 사라진 뒤 오픈 인트로가 이어진다.
+    private func playUpdated() async throws {
+        try await Task.sleep(nanoseconds: 300_000_000)
+        await popUpdateButton(.updated)
+        // 스프링 안착(~0.5초) 후 2초 정지
+        try await Task.sleep(nanoseconds: 500_000_000 + 2_000_000_000)
+        withAnimation(.easeInOut(duration: 0.8)) {
+            updateOpacity = 0
+        }
+        try await Task.sleep(nanoseconds: 800_000_000)
+        updatePhase = .none
     }
 
     private func handleDragEnd(index: Int) {
@@ -542,12 +730,13 @@ struct ContentView: View {
         return true
     }
 
-    private func clampButtonPosition(_ raw: CGPoint) -> CGPoint {
-        let x = min(max(raw.x, 7), 320 + 1 - btnSize.width)
+    private func clampButtonPosition(_ raw: CGPoint, size: CGSize? = nil) -> CGPoint {
+        let size = size ?? btnSize
+        let x = min(max(raw.x, 7), 320 + 1 - size.width)
         // 버튼 중심 x가 화면 가운데 3분의 1에 있으면 바닥까지 내려갈 수 있음
-        let btnCenterX = x + btnSize.width / 2
+        let btnCenterX = x + size.width / 2
         let inCenterThird = btnCenterX >= 320.0 / 3 && btnCenterX <= 320.0 * 2 / 3
-        let yMax: CGFloat = inCenterThird ? (200 - btnSize.height) : (200 - 8 - btnSize.height)
+        let yMax: CGFloat = inCenterThird ? (200 - size.height) : (200 - 8 - size.height)
         let y = min(max(raw.y, 5), yMax)
         return CGPoint(x: x, y: y)
     }
@@ -620,6 +809,44 @@ struct ContentView: View {
 
         self.slots = loadedSlots
         self.hiddenQueue = loadedHidden
+    }
+}
+
+// MARK: - Update Blob
+//
+// 업데이트 버튼의 흰색 블러. blobsCanvas 와 같은 규칙(소리원 중심에 가까울수록 커짐, 소리원으로 클립)이지만
+// 튀어오르는 스프링 애니메이션 매 프레임마다 지름을 다시 계산하도록 ref 를 animatableData 로 받는다.
+
+private struct UpdateBlob: View, @preconcurrency Animatable {
+    var ref: CGPoint
+    let soundCenter: CGPoint
+    let soundRadius: CGFloat
+
+    var animatableData: AnimatablePair<CGFloat, CGFloat> {
+        get { AnimatablePair(ref.x, ref.y) }
+        set { ref = CGPoint(x: newValue.first, y: newValue.second) }
+    }
+
+    var body: some View {
+        let d = sqrt(pow(ref.x - soundCenter.x, 2) + pow(ref.y - soundCenter.y, 2))
+        let t = max(0, 1 - d / soundRadius)
+        let diameter = 48 + (240 - 48) * t
+        ZStack {
+            if d <= soundRadius {
+                Circle()
+                    .fill(Color.white)
+                    .frame(width: diameter, height: diameter)
+                    .blur(radius: 20)
+                    .opacity(0.4)
+                    .position(ref)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .mask(
+            Circle()
+                .frame(width: soundRadius * 2, height: soundRadius * 2)
+                .position(soundCenter)
+        )
     }
 }
 
