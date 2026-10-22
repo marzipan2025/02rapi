@@ -35,6 +35,11 @@ struct _02rapi: App {
 class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var didSetup = false
 
+    // 시스템 다크 모드와 관계없이 항상 라이트 모드 (유리·머티리얼·메뉴 포함)
+    func applicationWillFinishLaunching(_ notification: Notification) {
+        NSApp.appearance = NSAppearance(named: .aqua)
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         DispatchQueue.main.async {
             guard let window = NSApplication.shared.windows.first else { return }
