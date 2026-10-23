@@ -512,7 +512,7 @@ struct ContentView: View {
                 let lr: Float = r * k
                 let lg: Float = g * k
                 let lb: Float = b * k
-                let alpha: Float = min(1, w) * 0.45
+                let alpha: Float = min(1, w) * 0.64
                 let c = Color.Resolved(colorSpace: .sRGBLinear, red: lr, green: lg, blue: lb, opacity: alpha)
                 points.append(SIMD2<Float>(u, v))
                 colors.append(Color(c))
