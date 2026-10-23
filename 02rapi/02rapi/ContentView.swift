@@ -451,7 +451,48 @@ struct ContentView: View {
         }
     }
 
+    // 실험: 소리원 유리 모드에서는 메시·렌즈 이전(v1.0.5.5 까지)의 블러, 나머지 모드는 메시+렌즈
+    @ViewBuilder
     private var blobsCanvas: some View {
+        if glassMode == .glassWithSound {
+            legacyBlobsCanvas
+        } else {
+            meshBlobsCanvas
+        }
+    }
+
+    // 채널마다 자기 색 원 하나에 20px 블러. 원끼리는 그냥 겹친다.
+    private var legacyBlobsCanvas: some View {
+        Canvas { context, _ in
+            let clipPath = Path(ellipseIn: CGRect(
+                x: soundCenter.x - soundRadius, y: soundCenter.y - soundRadius,
+                width: soundRadius * 2, height: soundRadius * 2
+            ))
+            var clipped = context
+            clipped.clip(to: clipPath)
+
+            for slot in slots {
+                let ref = refPoint(slot.position)
+                let d = dist(ref, soundCenter)
+                guard d <= soundRadius else { continue }
+                let t = 1 - d / soundRadius
+                let diameter = 48 + (240 - 48) * t
+
+                var blob = clipped
+                blob.opacity = 0.65
+                blob.addFilter(.blur(radius: 20))
+                blob.fill(
+                    Path(ellipseIn: CGRect(
+                        x: ref.x - diameter / 2, y: ref.y - diameter / 2,
+                        width: diameter, height: diameter
+                    )),
+                    with: .color(slot.channel.brandColor)
+                )
+            }
+        }
+    }
+
+    private var meshBlobsCanvas: some View {
         Canvas { context, _ in
             let clipPath = Path(ellipseIn: CGRect(
                 x: soundCenter.x - soundRadius, y: soundCenter.y - soundRadius,
@@ -513,7 +554,7 @@ struct ContentView: View {
                 let lr: Float = r * k
                 let lg: Float = g * k
                 let lb: Float = b * k
-                let alpha: Float = min(1, w) * 0.64
+                let alpha: Float = min(1, w) * 0.59
                 let c = Color.Resolved(colorSpace: .sRGBLinear, red: lr, green: lg, blue: lb, opacity: alpha)
                 points.append(SIMD2<Float>(u, v))
                 colors.append(Color(c))
