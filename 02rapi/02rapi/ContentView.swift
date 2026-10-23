@@ -465,7 +465,8 @@ struct ContentView: View {
                 let d = dist(ref, soundCenter)
                 guard d <= soundRadius else { return nil }
                 let t = 1 - d / soundRadius
-                let diameter = 48 + (240 - 48) * t
+                // 가장자리로 갈수록 비례적으로 줄여 가장자리에서 80% (중심 1배 → 가장자리 0.8배)
+                let diameter = (48 + (240 - 48) * t) * (0.8 + 0.2 * t)
                 return (ref, diameter, slot.channel.brandColor)
             }
             clipped.fill(clipPath, with: .style(blobMesh(blobs, box: clipPath.boundingRect)))
@@ -1010,7 +1011,7 @@ private struct UpdateBlob: View, @preconcurrency Animatable {
     var body: some View {
         let d = sqrt(pow(ref.x - soundCenter.x, 2) + pow(ref.y - soundCenter.y, 2))
         let t = max(0, 1 - d / soundRadius)
-        let diameter = 48 + (240 - 48) * t
+        let diameter = (48 + (240 - 48) * t) * (0.8 + 0.2 * t)  // blobsCanvas 와 같은 규칙
         ZStack {
             if d <= soundRadius {
                 Circle()
