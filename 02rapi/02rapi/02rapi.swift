@@ -23,7 +23,7 @@ struct _02rapi: App {
                 }
                 .keyboardShortcut("t", modifiers: .command)
 
-                Button("Cycle Glass Effect") {
+                Button("Toggle Glass Effect") {
                     NotificationCenter.default.post(name: .toggleGlassEffect, object: nil)
                 }
                 .keyboardShortcut("g", modifiers: .command)

@@ -178,20 +178,22 @@ struct ContentView: View {
     @State private var channelsRise: [CGFloat] = [12, 12, 12]
 
     @State private var isOnTop = false
-    // ⌘G 로 순환하는 유리 모드: 창 Liquid Glass → 창 머티리얼 → 창 Liquid Glass + 소리원 유리
-    private enum GlassMode: Int, CaseIterable {
-        case glass, material, glassWithSound
+    // ⌘G 로 바꾸는 유리 모드: 창 Liquid Glass ↔ 창 머티리얼
+    private enum GlassMode: Int {
+        case glass, material
     }
     // 이전 버전들의 설정 (이전용): 1.1.0 이하 on/off, 1.1.1 모드
     @AppStorage("glassEffectEnabled_v103") private var useGlassEffect: Bool = true
     @AppStorage("glassMode_v111") private var legacyGlassModeRaw: Int = -1
     @AppStorage("glassMode_v112") private var glassModeRaw: Int = -1
-    // 1.1.2 부터 소리원 유리 모드가 기본. 예전에 머티리얼을 골라 둔 사람만 머티리얼을 유지한다.
+    // 창 Liquid Glass 가 기본. 머티리얼을 골라 둔 사람만 머티리얼을 유지한다.
+    // (1.1.4 까지 있던 소리원 유리 모드 값 2 는 창 Liquid Glass 로 읽는다)
     private var glassMode: GlassMode {
-        if let mode = GlassMode(rawValue: glassModeRaw) { return mode }
+        if glassModeRaw == GlassMode.material.rawValue { return .material }
+        if glassModeRaw >= 0 { return .glass }
         let choseMaterial = legacyGlassModeRaw == GlassMode.material.rawValue
             || (legacyGlassModeRaw == -1 && !useGlassEffect)
-        return choseMaterial ? .material : .glassWithSound
+        return choseMaterial ? .material : .glass
     }
 
     @StateObject private var radio = MpvRadioPlayer()
@@ -326,16 +328,6 @@ struct ContentView: View {
             blobsCanvas
                 .allowsHitTesting(false)
 
-            // 소리원 위에 맑은 Liquid Glass 한 겹 (렌즈 셰이더 굴절·색수차는 그 아래에 그대로)
-            if glassMode == .glassWithSound {
-                Circle()
-                    .fill(Color.clear)
-                    .frame(width: soundRadius * 2, height: soundRadius * 2)
-                    .glassEffect(.clear, in: Circle())
-                    .position(soundCenter)
-                    .allowsHitTesting(false)
-            }
-
             if updatePhase != .none {
                 UpdateBlob(ref: updateRef(updatePos), soundCenter: soundCenter, soundRadius: soundRadius)
                     .opacity(updateOpacity)
@@ -408,7 +400,7 @@ struct ContentView: View {
             toggleOnTop()
         }
         .onReceive(NotificationCenter.default.publisher(for: .toggleGlassEffect)) { _ in
-            glassModeRaw = (glassMode.rawValue + 1) % GlassMode.allCases.count
+            glassModeRaw = (glassMode == .glass ? GlassMode.material : GlassMode.glass).rawValue
         }
     }
 
@@ -451,48 +443,7 @@ struct ContentView: View {
         }
     }
 
-    // 실험: 소리원 유리 모드에서는 메시·렌즈 이전(v1.0.5.5 까지)의 블러, 나머지 모드는 메시+렌즈
-    @ViewBuilder
     private var blobsCanvas: some View {
-        if glassMode == .glassWithSound {
-            legacyBlobsCanvas
-        } else {
-            meshBlobsCanvas
-        }
-    }
-
-    // 채널마다 자기 색 원 하나에 20px 블러. 원끼리는 그냥 겹친다.
-    private var legacyBlobsCanvas: some View {
-        Canvas { context, _ in
-            let clipPath = Path(ellipseIn: CGRect(
-                x: soundCenter.x - soundRadius, y: soundCenter.y - soundRadius,
-                width: soundRadius * 2, height: soundRadius * 2
-            ))
-            var clipped = context
-            clipped.clip(to: clipPath)
-
-            for slot in slots {
-                let ref = refPoint(slot.position)
-                let d = dist(ref, soundCenter)
-                guard d <= soundRadius else { continue }
-                let t = 1 - d / soundRadius
-                let diameter = 48 + (240 - 48) * t
-
-                var blob = clipped
-                blob.opacity = 0.65
-                blob.addFilter(.blur(radius: 20))
-                blob.fill(
-                    Path(ellipseIn: CGRect(
-                        x: ref.x - diameter / 2, y: ref.y - diameter / 2,
-                        width: diameter, height: diameter
-                    )),
-                    with: .color(slot.channel.brandColor)
-                )
-            }
-        }
-    }
-
-    private var meshBlobsCanvas: some View {
         Canvas { context, _ in
             let clipPath = Path(ellipseIn: CGRect(
                 x: soundCenter.x - soundRadius, y: soundCenter.y - soundRadius,
