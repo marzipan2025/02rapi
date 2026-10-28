@@ -221,6 +221,12 @@ struct ContentView: View {
         return choseMaterial ? .material : .glass
     }
 
+    // 소리원·포털 바탕색. 다크에선 색 자체를 40% 어둡게 (원이 0.25 로 깔려 15% 로는 거의 티가 안 났다).
+    private var circleFill: Color {
+        let k: Double = glassMode.isDark ? 0.6 : 1
+        return Color(red: 0x8D/255 * k, green: 0x98/255 * k, blue: 0xC7/255 * k).opacity(0.25)
+    }
+
     // 좌우 상단 아이콘의 꺼진 상태 불투명도 (다크에선 조금 더 보이게)
     private var iconDimOpacity: Double { glassMode.isDark ? 0.7 : 0.6 }
 
@@ -316,14 +322,14 @@ struct ContentView: View {
 
             // 소리원 (상단)
             Circle()
-                .fill(Color(red: 0x8D/255, green: 0x98/255, blue: 0xC7/255).opacity(0.25))
+                .fill(circleFill)
                 .frame(width: soundRadius * 2, height: soundRadius * 2)
                 .position(soundCenter)
                 .allowsHitTesting(false)
 
             // 채널포털 (하단; 시각 속성만 소리원과 동일)
             Circle()
-                .fill(Color(red: 0x8D/255, green: 0x98/255, blue: 0xC7/255).opacity(0.25))
+                .fill(circleFill)
                 .frame(width: portalRadius * 2, height: portalRadius * 2)
                 .position(portalCenter)
                 .allowsHitTesting(false)
