@@ -119,16 +119,36 @@ private struct ParabolicOffset: ViewModifier, @preconcurrency Animatable {
 
 // MARK: - Glass Background Modifier
 
-private struct ConditionalGlassEffect: ViewModifier {
-    var useGlass: Bool
+private struct WindowBackground: ViewModifier {
+    var mode: ContentView.GlassMode
+
+    private static let darkTint = Color(red: 0x0E/255, green: 0x0F/255, blue: 0x14/255)
 
     func body(content: Content) -> some View {
-        if useGlass {
+        switch mode {
+        case .glass:
             content
                 .glassEffect(.clear, in: .rect(cornerRadius: 32))
-        } else {
+                .environment(\.colorScheme, .light)
+        case .material:
             content
                 .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 32))
+                .environment(\.colorScheme, .light)
+        case .glassDark:
+            // 짙은 남색-검정을 입힌 Liquid Glass (유리 굴절·가장자리 빛은 살리고 바탕만 어둡게)
+            content
+                .glassEffect(.clear.tint(Self.darkTint.opacity(0.8)), in: .rect(cornerRadius: 32))
+                .environment(\.colorScheme, .dark)
+        case .materialDark:
+            // 어두운 머티리얼 위에 짙은 남색-검정을 덮어 뒤가 아주 살짝만 비치는 매트
+            content
+                .background {
+                    ZStack {
+                        RoundedRectangle(cornerRadius: 32).fill(.ultraThinMaterial)
+                        RoundedRectangle(cornerRadius: 32).fill(Self.darkTint.opacity(0.88))
+                    }
+                }
+                .environment(\.colorScheme, .dark)
         }
     }
 }
@@ -178,9 +198,12 @@ struct ContentView: View {
     @State private var channelsRise: [CGFloat] = [12, 12, 12]
 
     @State private var isOnTop = false
-    // ⌘G 로 바꾸는 유리 모드: 창 Liquid Glass ↔ 창 머티리얼
-    private enum GlassMode: Int {
-        case glass, material
+    // ⌘G 로 순환하는 창 모드: 글래스+라이트(기본) → 매트+라이트 → 글래스+다크 → 매트+다크
+    // (2 는 1.1.4 까지의 소리원 유리 모드가 쓰던 값이라 비워 둔다)
+    enum GlassMode: Int {
+        case glass = 0, material = 1, glassDark = 3, materialDark = 4
+
+        var isDark: Bool { self == .glassDark || self == .materialDark }
     }
     // 이전 버전들의 설정 (이전용): 1.1.0 이하 on/off, 1.1.1 모드
     @AppStorage("glassEffectEnabled_v103") private var useGlassEffect: Bool = true
@@ -190,11 +213,16 @@ struct ContentView: View {
     // (1.1.4 까지 있던 소리원 유리 모드 값 2 는 창 Liquid Glass 로 읽는다)
     private var glassMode: GlassMode {
         if glassModeRaw == GlassMode.material.rawValue { return .material }
+        if glassModeRaw == GlassMode.glassDark.rawValue { return .glassDark }
+        if glassModeRaw == GlassMode.materialDark.rawValue { return .materialDark }
         if glassModeRaw >= 0 { return .glass }
         let choseMaterial = legacyGlassModeRaw == GlassMode.material.rawValue
             || (legacyGlassModeRaw == -1 && !useGlassEffect)
         return choseMaterial ? .material : .glass
     }
+
+    // 좌우 상단 아이콘의 꺼진 상태 불투명도 (다크에선 조금 더 보이게)
+    private var iconDimOpacity: Double { glassMode.isDark ? 0.7 : 0.6 }
 
     @StateObject private var radio = MpvRadioPlayer()
 
@@ -350,6 +378,7 @@ struct ContentView: View {
             SVGImage(name: "textdeco", fallbackText: "", color: .clear)
                 .frame(width: 300, height: 121)
                 .position(x: 160, y: 72.5)
+                .opacity(glassMode.isDark ? 0.5 : 1)  // 다크에선 장식 글자를 한 단계 낮춤
                 .allowsHitTesting(false)
 
             ForEach(0..<3, id: \.self) { index in
@@ -367,7 +396,7 @@ struct ContentView: View {
             Button(action: restoreDefaults) {
                 SVGImage(name: "reloc", fallbackText: "↺", color: Color(red: 0xBE/255.0, green: 0xC2/255.0, blue: 0xD0/255.0), tinted: true)
                     .frame(width: 20, height: 20)
-                    .opacity(0.6)  // 상태 표시 없이 항상 흐리게 (밝기 변화는 OnTop 핀만)
+                    .opacity(iconDimOpacity)  // 상태 표시 없이 항상 흐리게 (밝기 변화는 OnTop 핀만)
             }
             .buttonStyle(.plain)
             .position(x: 18, y: 22)
@@ -376,13 +405,13 @@ struct ContentView: View {
             Button(action: toggleOnTop) {
                 SVGImage(name: "onTop", fallbackText: "📌", color: Color(red: 0xBE/255.0, green: 0xC2/255.0, blue: 0xD0/255.0), tinted: true)
                     .frame(width: 20, height: 20)
-                    .opacity(isOnTop ? 1.0 : 0.6)
+                    .opacity(isOnTop ? 1.0 : iconDimOpacity)
             }
             .buttonStyle(.plain)
             .position(x: 298, y: 22)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .modifier(ConditionalGlassEffect(useGlass: glassMode != .material))
+        .modifier(WindowBackground(mode: glassMode))
         .ignoresSafeArea()
         .onAppear { loadPersistedState() }
         .task { await startUpdateFlow() }
@@ -400,7 +429,13 @@ struct ContentView: View {
             toggleOnTop()
         }
         .onReceive(NotificationCenter.default.publisher(for: .toggleGlassEffect)) { _ in
-            glassModeRaw = (glassMode == .glass ? GlassMode.material : GlassMode.glass).rawValue
+            let next: GlassMode = switch glassMode {
+            case .glass: .material
+            case .material: .glassDark
+            case .glassDark: .materialDark
+            case .materialDark: .glass
+            }
+            glassModeRaw = next.rawValue
         }
     }
 
