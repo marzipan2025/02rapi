@@ -221,6 +221,14 @@ struct ContentView: View {
         return choseMaterial ? .material : .glass
     }
 
+    // 설치 중 포털 점멸의 호흡 (0…1, 2.8초 주기). 허밍도 같은 기준 시각으로 맞춘다.
+    // smoothstep: 바닥과 정점에서 오래 머물고 중간을 지나가는 묵직한 호흡
+    private static func portalBreath(at date: Date) -> Double {
+        let t = date.timeIntervalSinceReferenceDate
+        let wave = (1 - cos(t * 2 * .pi / 2.8)) / 2
+        return wave * wave * (3 - 2 * wave)
+    }
+
     // 소리원·포털 바탕색. 다크에선 색 자체를 40% 어둡게 (원이 0.25 로 깔려 15% 로는 거의 티가 안 났다).
     private var circleFill: Color {
         let k: Double = glassMode.isDark ? 0.6 : 1
@@ -338,10 +346,7 @@ struct ContentView: View {
             // 아래층에 원 경계 밖으로 45px 블러가 퍼지는 글로우(지름 230, 최대 0.4)가 같은 호흡으로 함께 점멸.
             if updatePhase == .installing {
                 TimelineView(.animation) { timeline in
-                    let t = timeline.date.timeIntervalSinceReferenceDate
-                    let wave = (1 - cos(t * 2 * .pi / 2.8)) / 2
-                    // smoothstep: 바닥과 정점에서 오래 머물고 중간을 지나가는 묵직한 호흡
-                    let breath = wave * wave * (3 - 2 * wave)
+                    let breath = Self.portalBreath(at: timeline.date)
                     ZStack {
                         Circle()
                             .fill(Color.white)
@@ -361,6 +366,32 @@ struct ContentView: View {
 
             blobsCanvas
                 .allowsHitTesting(false)
+
+            // 포털 점멸 빛이 소리원 아래 윤곽에 비침: 포털 경계에서 멀어질수록 약해지는 빛을
+            // 소리원 모양으로 잘라 같은 호흡으로 얹는다 (포털과 가장 가까운 아래 가운데가 가장 밝음)
+            if updatePhase == .installing {
+                TimelineView(.animation) { timeline in
+                    let breath = Self.portalBreath(at: timeline.date)
+                    Rectangle()
+                        .fill(RadialGradient(
+                            stops: [
+                                .init(color: .white, location: 0),
+                                .init(color: .white.opacity(0.45), location: 0.35),
+                                .init(color: .white.opacity(0), location: 1)
+                            ],
+                            center: UnitPoint(x: portalCenter.x / 320, y: portalCenter.y / 200),
+                            startRadius: portalRadius,
+                            endRadius: portalRadius + 150
+                        ))
+                        .opacity(0.35 * breath)
+                        .mask(
+                            Circle()
+                                .frame(width: soundRadius * 2, height: soundRadius * 2)
+                                .position(soundCenter)
+                        )
+                }
+                .allowsHitTesting(false)
+            }
 
             if updatePhase != .none {
                 UpdateBlob(ref: updateRef(updatePos), soundCenter: soundCenter, soundRadius: soundRadius)
