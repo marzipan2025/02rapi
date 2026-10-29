@@ -515,75 +515,30 @@ struct ContentView: View {
         }
     }
 
+    // 소리원 블러: 셰이더 한 번으로 블러 장·렌즈·디더링을 함께 그린다 (BlobLens.metal 의 blobField).
+    // 메시 그라데이션을 8비트 레이어에 그려 렌즈 셰이더로 다시 읽던 방식은 다크 바탕에서 계단이 보였다.
     private var blobsCanvas: some View {
-        Canvas { context, _ in
-            let clipPath = Path(ellipseIn: CGRect(
-                x: soundCenter.x - soundRadius, y: soundCenter.y - soundRadius,
-                width: soundRadius * 2, height: soundRadius * 2
+        var data: [Float] = []
+        for slot in slots {
+            let ref = refPoint(slot.position)
+            let d = dist(ref, soundCenter)
+            guard d <= soundRadius else { continue }
+            let t = 1 - d / soundRadius
+            // 가장자리로 갈수록 비례적으로 줄여 가장자리에서 80% (중심 1배 → 가장자리 0.8배)
+            let diameter = (48 + (240 - 48) * t) * (0.8 + 0.2 * t)
+            let c = slot.channel.brandColor.resolve(in: EnvironmentValues())
+            data += [Float(ref.x), Float(ref.y), Float(diameter), c.linearRed, c.linearGreen, c.linearBlue]
+        }
+        return Rectangle()
+            .fill(Color.white)
+            .colorEffect(ShaderLibrary.blobField(
+                .float2(soundCenter),
+                .float(soundRadius),
+                .float(0.3),     // 굴절 강도: 중심 약 1.4배 확대
+                .float(0.14),    // 색수차: 가장자리 약 17px, 안쪽에서도 약 5px
+                .floatArray(data.isEmpty ? [0] : data)  // 빈 배열 대신 블러 0개로 읽히는 값 하나
             ))
-            var clipped = context
-            clipped.clip(to: clipPath)
-
-            let blobs: [(center: CGPoint, diameter: CGFloat, color: Color)] = slots.compactMap { slot in
-                let ref = refPoint(slot.position)
-                let d = dist(ref, soundCenter)
-                guard d <= soundRadius else { return nil }
-                let t = 1 - d / soundRadius
-                // 가장자리로 갈수록 비례적으로 줄여 가장자리에서 80% (중심 1배 → 가장자리 0.8배)
-                let diameter = (48 + (240 - 48) * t) * (0.8 + 0.2 * t)
-                return (ref, diameter, slot.channel.brandColor)
-            }
-            clipped.fill(clipPath, with: .style(blobMesh(blobs, box: clipPath.boundingRect)))
-        }
-        // 소리원을 볼록렌즈처럼: 가운데 확대 + 가장자리 색수차
-        .modifier(BlobLensEffect(center: soundCenter, radius: soundRadius))
-    }
-
-    // 메시: 소리원을 덮는 13×13 메시 그라데이션.
-    //  · 불투명도 = 블러들의 가우시안 가중치 합 → 크고 가까운 블러일수록 넓고 진하게 (볼륨·좌우 인지)
-    //  · 색 = "자기 반지름 대비 거리"의 역세제곱 가중 평균 → 각 블러 중심 근처는 반드시 자기 색이고,
-    //    큰 블러가 작은 블러를 덮지 못한 채 경계에서만 섞인다.
-    private func blobMesh(_ blobs: [(center: CGPoint, diameter: CGFloat, color: Color)], box: CGRect) -> MeshGradient {
-        let n = 13
-        let resolved: [Color.Resolved] = blobs.map { $0.color.resolve(in: EnvironmentValues()) }
-        var points: [SIMD2<Float>] = []
-        var colors: [Color] = []
-        for row in 0..<n {
-            for col in 0..<n {
-                let u = Float(col) / Float(n - 1)
-                let v = Float(row) / Float(n - 1)
-                let p = CGPoint(x: box.minX + CGFloat(u) * box.width, y: box.minY + CGFloat(v) * box.height)
-                var w: Float = 0
-                var hueW: Float = 0
-                var r: Float = 0
-                var g: Float = 0
-                var b: Float = 0
-                for i in blobs.indices {
-                    let sigma: CGFloat = blobs[i].diameter * 0.4
-                    let dd: CGFloat = dist(p, blobs[i].center)
-                    let exponent: CGFloat = -(dd * dd) / (2 * sigma * sigma)
-                    w += Float(exp(exponent))
-
-                    let rel: CGFloat = max(dd / (blobs[i].diameter / 2), 0.05)
-                    let hi = Float(1 / (rel * rel * rel))
-                    let ci: Color.Resolved = resolved[i]
-                    hueW += hi
-                    r += hi * ci.linearRed
-                    g += hi * ci.linearGreen
-                    b += hi * ci.linearBlue
-                }
-                var k: Float = 0
-                if hueW > 0 { k = 1 / hueW }
-                let lr: Float = r * k
-                let lg: Float = g * k
-                let lb: Float = b * k
-                let alpha: Float = min(1, w) * 0.59
-                let c = Color.Resolved(colorSpace: .sRGBLinear, red: lr, green: lg, blue: lb, opacity: alpha)
-                points.append(SIMD2<Float>(u, v))
-                colors.append(Color(c))
-            }
-        }
-        return MeshGradient(width: n, height: n, points: points, colors: colors)
+            .opacity(data.isEmpty ? 0 : 1)
     }
 
     @ViewBuilder
@@ -1033,27 +988,6 @@ struct ContentView: View {
 
         self.slots = loadedSlots
         self.hiddenQueue = loadedHidden
-    }
-}
-
-// MARK: - Blob Lens Effect
-//
-// 소리원 블러 레이어에 볼록렌즈 굴절 + 가장자리 색수차. BlobLens.metal 참고.
-
-private struct BlobLensEffect: ViewModifier {
-    let center: CGPoint
-    let radius: CGFloat
-
-    func body(content: Content) -> some View {
-        content.layerEffect(
-            ShaderLibrary.blobLens(
-                .float2(center),
-                .float(radius),
-                .float(0.3),     // 굴절 강도: 중심 약 1.4배 확대
-                .float(0.14)     // 색수차: 가장자리 약 17px, 안쪽에서도 약 5px
-            ),
-            maxSampleOffset: CGSize(width: 48, height: 48)
-        )
     }
 }
 
