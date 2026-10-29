@@ -93,13 +93,37 @@ private struct PersistentState: Codable {
 // MARK: - Window Drag View
 
 struct WindowDragArea: NSViewRepresentable {
+    // 창을 움직이지 않고 놓은 클릭 (끌기와 구분)
+    var onClick: (() -> Void)?
+
     func makeNSView(context: Context) -> WindowDragNSView { WindowDragNSView() }
-    func updateNSView(_ nsView: WindowDragNSView, context: Context) {}
+    func updateNSView(_ nsView: WindowDragNSView, context: Context) { nsView.onClick = onClick }
 }
 
 class WindowDragNSView: NSView {
+    var onClick: (() -> Void)?
+
+    private var downEvent: NSEvent?
+
     override var mouseDownCanMoveWindow: Bool { true }
-    override func mouseDown(with event: NSEvent) { window?.performDrag(with: event) }
+    // performDrag 는 바로 돌아와 끌었는지 알 수 없다. 눌렀을 땐 기다렸다가 움직이기 시작하면 창 끌기를 넘기고,
+    // 움직이지 않고 떼면 클릭으로 친다 (창 끌기가 시작되면 mouseUp 은 이 뷰로 오지 않는다).
+    override func mouseDown(with event: NSEvent) {
+        downEvent = event
+    }
+    override func mouseDragged(with event: NSEvent) {
+        guard let down = downEvent else { return }
+        // 누르는 동안의 손떨림(3pt 이내)은 끌기로 치지 않는다
+        let dx = event.locationInWindow.x - down.locationInWindow.x
+        let dy = event.locationInWindow.y - down.locationInWindow.y
+        guard dx * dx + dy * dy > 9 else { return }
+        downEvent = nil
+        window?.performDrag(with: down)
+    }
+    override func mouseUp(with event: NSEvent) {
+        if downEvent != nil { onClick?() }
+        downEvent = nil
+    }
 }
 
 // MARK: - Parabolic Cycle Offset
@@ -179,6 +203,10 @@ struct ContentView: View {
     // 소리원에 들어온 차례 (슬롯별). 나중에 들어온 버튼이 버튼들 중 맨 위에 그려진다.
     @State private var entryStamp: [Int] = [0, 0, 0]
     @State private var entryCounter = 0
+    // 외부 장치(에어팟·키보드 재생 키·제어 센터)로 정지된 상태. 채널 버튼·블러의 채도가 빠지고 소리가 멈춘다.
+    @State private var isPaused = false
+    @State private var playSaturation: Double = 1
+    private static let pauseFade: Double = 1.0
 
     // 사이클링 애니메이션 상태 (슬롯별)
     @State private var slotOpacity: [Double] = [1, 1, 1]
@@ -334,7 +362,8 @@ struct ContentView: View {
 
     var body: some View {
         ZStack {
-            WindowDragArea()
+            // 정지 중엔 끌면 창이 움직이고, 끌지 않고 누르면 다시 재생
+            WindowDragArea(onClick: isPaused ? { resumePlayback() } : nil)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
 
             // 소리원 (상단)
@@ -374,6 +403,7 @@ struct ContentView: View {
             }
 
             blobsCanvas
+                .saturation(playSaturation)
                 .allowsHitTesting(false)
 
             // 포털 점멸 빛이 소리원 아래 윤곽에 비침: 포털 경계에서 멀어질수록 약해지는 빛을
@@ -437,6 +467,8 @@ struct ContentView: View {
                         .zIndex(Double(entryStamp[index]))
                 }
             }
+            .saturation(playSaturation)
+            .allowsHitTesting(!isPaused)
 
             if updatePhase != .none {
                 updateButton
@@ -450,6 +482,7 @@ struct ContentView: View {
             }
             .buttonStyle(.plain)
             .position(x: 18, y: 22)
+            .allowsHitTesting(!isPaused)  // 정지 중엔 눌러도 다시 재생만
 
             // OnTop button
             Button(action: toggleOnTop) {
@@ -459,11 +492,20 @@ struct ContentView: View {
             }
             .buttonStyle(.plain)
             .position(x: 298, y: 22)
+            .allowsHitTesting(!isPaused)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .modifier(WindowBackground(mode: glassMode))
         .ignoresSafeArea()
-        .onAppear { loadPersistedState() }
+        .onAppear {
+            loadPersistedState()
+            RemoteControl.shared.start()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .remotePause)) { _ in pausePlayback() }
+        .onReceive(NotificationCenter.default.publisher(for: .remotePlay)) { _ in resumePlayback() }
+        .onReceive(NotificationCenter.default.publisher(for: .remoteToggle)) { _ in
+            if isPaused { resumePlayback() } else { pausePlayback() }
+        }
         .onChange(of: slots) { old, new in
             // 밖에서 소리원으로 들어오거나, 안에 있던 자리에 다른 채널이 들어오면 새로 들어온 것으로 친다
             for i in new.indices where isInSound(new[i]) && !(isInSound(old[i]) && old[i].channel == new[i].channel) {
@@ -486,6 +528,7 @@ struct ContentView: View {
             toggleOnTop()
         }
         .onReceive(NotificationCenter.default.publisher(for: .toggleGlassEffect)) { _ in
+            guard !isPaused else { return }  // 정지 중엔 ⌘G 무시
             let next: GlassMode = switch glassMode {
             case .glass: .material
             case .material: .glassDark
@@ -543,7 +586,7 @@ struct ContentView: View {
             let ref = refPoint(slot.position)
             let d = dist(ref, soundCenter)
             guard d <= soundRadius else { continue }
-            let t = 1 - d / soundRadius
+            let t = loudness(ref)  // 음량과 같은 기준: 최대 음량 자리에서 가장 크게
             // 가장자리로 갈수록 비례적으로 줄여 가장자리에서 80% (중심 1배 → 가장자리 0.8배)
             let diameter = (48 + (240 - 48) * t) * (0.8 + 0.2 * t)
             let c = slot.channel.brandColor.resolve(in: EnvironmentValues())
@@ -583,6 +626,7 @@ struct ContentView: View {
             .gesture(
                 DragGesture()
                     .onChanged { value in
+                        guard !isPaused else { return }
                         if dragStart[index] == nil { dragStart[index] = slots[index].position }
                         let start = dragStart[index]!
                         let rawX = start.x + value.translation.width
@@ -772,12 +816,144 @@ struct ContentView: View {
         let refPos = refPoint(slots[index].position)
         let inPortal = dist(refPos, portalCenter) <= portalRadius
         dragStart[index] = nil
+        guard !isPaused else { persistState(); return }
 
         if inPortal && !hiddenQueue.isEmpty && !isAnimating[index] {
             cycleChannel(at: index)
             // persistState 는 사이클 애니메이션 완료 후 Task 안에서 호출
         } else {
+            if dist(refPos, topSnapRef) <= Self.topSnapRadius {
+                snapToTop(index: index)
+            }
             persistState()
+        }
+    }
+
+    // MARK: Pause / Resume (외부 장치)
+
+    private func pausePlayback() {
+        guard !isPaused else { return }
+        isPaused = true
+        withAnimation(.easeInOut(duration: Self.pauseFade)) { playSaturation = 0 }
+        radio.pauseAll(fade: Self.pauseFade)
+        RemoteControl.shared.setPlaying(false)
+    }
+
+    private func resumePlayback() {
+        guard isPaused else { return }
+        isPaused = false
+        // 회색에서 색이 막 돌아오는 첫 구간이 가장 눈에 띄어 easeInOut 으론 팍 튀어 보였다.
+        // 처음을 아주 천천히 열고 뒤에서 마저 채운다.
+        withAnimation(.timingCurve(0.6, 0, 0.7, 1, duration: Self.pauseFade)) { playSaturation = 1 }
+        radio.resumeAll(fade: Self.pauseFade)
+        for i in slots.indices where !isAnimating[i] {
+            updateAudio(slots[i].channel, pos: slots[i].position)
+        }
+        RemoteControl.shared.setPlaying(true)
+    }
+
+    // MARK: Top Snap
+    // 소리원 중심(y=13)은 버튼이 닿지 못하는 창 위쪽이라, 가운데 선 위 가장 높은 자리에서 peakDrop 만큼
+    // 내려온 곳을 가장 큰 소리 자리로 삼는다 (updateAudio 의 loudness). 놓은 기준점이 그 자리에서
+    // topSnapRadius 안이면 정확히 그 자리로 붙인다.
+    private static let peakDrop: CGFloat = 8
+    private static let topSnapRadius: CGFloat = 12
+    // 붙일 때 그 자리 근처(topSnapRadius 안)에 있던 다른 버튼을 튕겨 낼 거리
+    private static let topSnapPush: CGFloat = 40
+    // 벽 없이 topSnapPush 만큼 튕겨 멈추기까지 걸리는 시간 (초). 첫 속도는 여기서 정해지고,
+    // 벽에 부딪히면 그 속도 그대로 꺾여 이어지다 감속한다.
+    private static let topSnapPushDuration: CGFloat = 0.7
+    private static let topSnapPushSpeed: CGFloat = 2 * topSnapPush / topSnapPushDuration
+
+    private var topSnapPosition: CGPoint {
+        let top = clampButtonPosition(CGPoint(x: soundCenter.x - refInBtn.x, y: soundCenter.y - refInBtn.y))
+        return CGPoint(x: top.x, y: top.y + Self.peakDrop)
+    }
+
+    // 소리원 안 큰 소리 정도 (0…1): 최대 음량 자리에서 1, 소리원 경계에서 0.
+    // 두 거리의 비율이라 최대 자리가 소리원 중심이 아니어도 경계 볼륨은 그대로 이어진다.
+    private func loudness(_ ref: CGPoint) -> CGFloat {
+        let toPeak = dist(ref, topSnapRef)
+        let toEdge = max(soundRadius - dist(ref, soundCenter), 0)
+        return toPeak + toEdge > 0 ? toEdge / (toPeak + toEdge) : 0
+    }
+
+    private var topSnapRef: CGPoint { refPoint(topSnapPosition) }
+
+    private func snapToTop(index: Int) {
+        let snapRef = topSnapRef
+        let incoming = refPoint(slots[index].position)
+        // 붙은 버튼이 버튼들 중 맨 위로 (이미 원 안에 있던 버튼도)
+        entryCounter += 1
+        entryStamp[index] = entryCounter
+
+        withAnimation(.spring(duration: 0.25, bounce: 0.2)) {
+            slots[index].position = topSnapPosition
+        }
+        updateAudio(slots[index].channel, pos: slots[index].position)
+
+        for j in slots.indices where j != index && !isAnimating[j] {
+            let r = refPoint(slots[j].position)
+            let d = dist(r, snapRef)
+            guard d <= Self.topSnapRadius else { continue }
+            // 원래 있던 쪽으로, 정확히 그 자리였다면 새 버튼이 온 반대쪽으로 튕긴다
+            var dx = d > 0.5 ? r.x - snapRef.x : snapRef.x - incoming.x
+            var dy = d > 0.5 ? r.y - snapRef.y : snapRef.y - incoming.y
+            if abs(dx) < 0.01 && abs(dy) < 0.01 { dx = 1 }
+            let len = (dx * dx + dy * dy).squareRoot()
+            dx /= len; dy /= len
+            bounceAway(j, from: r, to: CGPoint(x: snapRef.x + dx * Self.topSnapPush, y: snapRef.y + dy * Self.topSnapPush))
+        }
+    }
+
+    // 기준점을 from → to 로 튕겨 보낸다. 벽(버튼이 갈 수 있는 끝)을 넘으면 부딪힌 자리에서 거울처럼 꺾여
+    // 남은 거리만큼 이어 가고, 그래도 스냅 반경 안에 떨어지면 같은 방향으로 미끄러져 반경 밖까지 흘러 나간다.
+    private func bounceAway(_ j: Int, from start: CGPoint, to target: CGPoint) {
+        let snapRef = topSnapRef
+        let lo = refPoint(clampButtonPosition(CGPoint(x: -1000, y: -1000)))
+        let hi = refPoint(clampButtonPosition(CGPoint(x: 1000, y: start.y)))
+        var hit: CGPoint?
+        var end = target
+        if end.y < lo.y {
+            let s = (start.y - lo.y) / (start.y - end.y)
+            hit = CGPoint(x: start.x + (end.x - start.x) * s, y: lo.y)
+            end.y = 2 * lo.y - end.y
+        }
+        if end.x < lo.x { end.x = 2 * lo.x - end.x }
+        if end.x > hi.x { end.x = 2 * hi.x - end.x }
+        // 떨어진 자리가 아직 스냅 반경 안이면, 움직이던 방향 그대로 미끄러져 반경을 벗어날 때까지 이어 간다
+        let exitR = Self.topSnapRadius + 4
+        if dist(end, snapRef) < exitR {
+            let from = hit ?? start
+            var ux = end.x - from.x, uy = end.y - from.y
+            let ul = (ux * ux + uy * uy).squareRoot()
+            if ul < 0.01 { ux = start.x >= snapRef.x ? 1 : -1; uy = 0 } else { ux /= ul; uy /= ul }
+            let px = end.x - snapRef.x, py = end.y - snapRef.y
+            let bb = px * ux + py * uy
+            let t = -bb + max(bb * bb - (px * px + py * py - exitR * exitR), 0).squareRoot()
+            end = CGPoint(x: end.x + ux * t, y: end.y + uy * t)
+        }
+        let toPos = { (p: CGPoint) in self.clampButtonPosition(CGPoint(x: p.x - self.refInBtn.x, y: p.y - self.refInBtn.y)) }
+        let finalPos = toPos(end)
+        let v = Self.topSnapPushSpeed
+        // 감속 구간: 첫 기울기 2 인 이차 ease-out → 시작 속도 v 로 이어진다
+        let glide = { (from: CGPoint) in
+            Animation.timingCurve(1.0 / 3, 2.0 / 3, 2.0 / 3, 1, duration: max(2 * self.dist(from, end) / v, 0.05))
+        }
+
+        guard let hit else {
+            withAnimation(glide(start)) { slots[j].position = finalPos }
+            updateAudio(slots[j].channel, pos: finalPos)
+            return
+        }
+        let hitPos = toPos(hit)
+        withAnimation(.linear(duration: max(dist(start, hit) / v, 0.02))) {
+            slots[j].position = hitPos
+        } completion: {
+            // 그 사이 다시 잡혔거나 다른 곳으로 옮겨졌다면 이어 가지 않는다
+            guard dragStart[j] == nil, slots[j].position == hitPos else { return }
+            withAnimation(glide(hit)) { slots[j].position = finalPos }
+            updateAudio(slots[j].channel, pos: finalPos)
         }
     }
 
@@ -945,8 +1121,8 @@ struct ContentView: View {
         let d = dist(ref, soundCenter)
 
         if d <= soundRadius {
-            // 소리원 내부: 10%~120% 볼륨
-            let t = 1 - d / soundRadius
+            // 소리원 내부: 10%~120% 볼륨 (최대는 가장 높은 가운데 자리에서 peakDrop 아래)
+            let t = loudness(ref)
             let volume = Float(0.10 + 1.10 * t)
             let pan = Float((ref.x - lineX) / soundRadius).clamped(-1, 1)
             radio.play(channel: channel, volume: volume, pan: pan)
@@ -1112,6 +1288,7 @@ private final class MpvLib: @unchecked Sendable {
     typealias CommandFn = @convention(c) (OpaquePointer, UnsafeMutablePointer<UnsafePointer<CChar>?>) -> Int32
     typealias SetPropFn = @convention(c) (OpaquePointer, UnsafePointer<CChar>, Int32, UnsafeRawPointer) -> Int32
     typealias SetPropStrFn = @convention(c) (OpaquePointer, UnsafePointer<CChar>, UnsafePointer<CChar>) -> Int32
+    typealias GetPropFn = @convention(c) (OpaquePointer, UnsafePointer<CChar>, Int32, UnsafeMutableRawPointer) -> Int32
 
     let create: CreateFn
     let initialize: InitFn
@@ -1120,6 +1297,7 @@ private final class MpvLib: @unchecked Sendable {
     let command: CommandFn
     let setProperty: SetPropFn
     let setPropertyString: SetPropStrFn
+    let getProperty: GetPropFn
 
     let available: Bool
 
@@ -1158,6 +1336,7 @@ private final class MpvLib: @unchecked Sendable {
             self.command = { _, _ in -1 }
             self.setProperty = { _, _, _, _ in -1 }
             self.setPropertyString = { _, _, _ in -1 }
+            self.getProperty = { _, _, _, _ in -1 }
             self.available = false
             return
         }
@@ -1169,6 +1348,7 @@ private final class MpvLib: @unchecked Sendable {
         self.command = unsafeBitCast(dlsym(handle, "mpv_command"), to: CommandFn.self)
         self.setProperty = unsafeBitCast(dlsym(handle, "mpv_set_property"), to: SetPropFn.self)
         self.setPropertyString = unsafeBitCast(dlsym(handle, "mpv_set_property_string"), to: SetPropStrFn.self)
+        self.getProperty = unsafeBitCast(dlsym(handle, "mpv_get_property"), to: GetPropFn.self)
         self.available = true
         print("libmpv loaded ✓")
     }
@@ -1193,12 +1373,88 @@ final class MpvRadioPlayer: ObservableObject, @unchecked Sendable {
     // pan 필터 재빌드 최소 간격. 60ms = 최대 ~16Hz 재빌드 빈도.
     private let panUpdateInterval: CFAbsoluteTime = 0.060
 
+    // 외부 정지·재생 페이드. 위치로 정한 볼륨(rawVolumes)에 0…1 게인(gains)을 곱해 mpv 에 넣는다.
+    // 정지: 게인 1 → 0 후 스트림을 끊는다 (라디오라 다시 재생하면 지금 방송부터).
+    // 재생: 남아 있던 스트림은 지금 게인에서 1 로, 새로 여는 스트림은 소리가 실제로 나오기 시작할 때 0 → 1.
+    private struct Fade { let from: Float; let to: Float; var start: CFAbsoluteTime?; let duration: Double; let created: CFAbsoluteTime }
+    private var rawVolumes: [RadioChannel: Float] = [:]
+    private var gains: [RadioChannel: Float] = [:]
+    private var fades: [RadioChannel: Fade] = [:]
+    private var fadeInNext: Set<RadioChannel> = []
+    private var fadeInDuration: Double = 0
+    private var fadeTimer: Timer?
+    private(set) var isPaused = false
+
+    func pauseAll(fade duration: Double) {
+        isPaused = true
+        fadeInNext.removeAll()
+        pendingTargets.removeAll()
+        let now = CFAbsoluteTimeGetCurrent()
+        for ch in channels.keys {
+            fades[ch] = Fade(from: gains[ch] ?? 1, to: 0, start: now, duration: duration, created: now)
+        }
+        startFadeTimer()
+    }
+
+    func resumeAll(fade duration: Double) {
+        isPaused = false
+        fadeInDuration = duration
+        fadeInNext = Set(RadioChannel.allCases).subtracting(channels.keys)
+        let now = CFAbsoluteTimeGetCurrent()
+        for ch in channels.keys {
+            fades[ch] = Fade(from: gains[ch] ?? 0, to: 1, start: now, duration: duration, created: now)
+        }
+        startFadeTimer()
+    }
+
+    private func startFadeTimer() {
+        guard fadeTimer == nil, !fades.isEmpty else { return }
+        let timer = Timer(timeInterval: 1.0 / 60, repeats: true) { [weak self] _ in self?.stepFades() }
+        RunLoop.main.add(timer, forMode: .common)
+        fadeTimer = timer
+    }
+
+    private func stepFades() {
+        let now = CFAbsoluteTimeGetCurrent()
+        for (ch, fade) in fades {
+            guard let mpv = channels[ch] else { fades[ch] = nil; continue }
+            var f = fade
+            if f.start == nil {
+                // 새 스트림: 소리가 나오기 시작할 때부터 (10초가 지나도 안 나오면 그냥 시작)
+                guard audioStarted(mpv) || now - f.created > 10 else { continue }
+                f.start = now
+                fades[ch] = f
+            }
+            let p = Float(min((now - f.start!) / f.duration, 1))
+            gains[ch] = f.from + (f.to - f.from) * p
+            applyVolume(ch)
+            if p >= 1 { fades[ch] = nil }
+        }
+        guard fades.isEmpty else { return }
+        fadeTimer?.invalidate()
+        fadeTimer = nil
+        if isPaused {
+            for ch in Array(channels.keys) { stop(channel: ch) }
+        }
+    }
+
+    private func audioStarted(_ mpv: OpaquePointer) -> Bool {
+        var pts: Double = 0
+        return lib.getProperty(mpv, "audio-pts", 5 /* MPV_FORMAT_DOUBLE */, &pts) >= 0
+    }
+
+    private func applyVolume(_ channel: RadioChannel) {
+        guard let mpv = channels[channel] else { return }
+        setVolume(mpv, volume: Double((rawVolumes[channel] ?? 0) * (gains[channel] ?? 1) * 100))
+    }
+
     func play(channel: RadioChannel, volume: Float, pan: Float) {
-        guard lib.available else { return }
+        guard lib.available, !isPaused else { return }
 
         if let mpv = channels[channel] {
             // 볼륨은 매 프레임 부드럽게 업데이트 (mpv soft property, 그래프 재빌드 없음)
-            setVolume(mpv, volume: Double(volume * 100))
+            rawVolumes[channel] = volume
+            applyVolume(channel)
 
             // pan 은 0.05 단위로 양자화 + 60ms 스로틀.
             // af=lavfi=[pan=...] 갱신은 mpv 내부에서 audio filter graph 를 재빌드해
@@ -1224,6 +1480,12 @@ final class MpvRadioPlayer: ObservableObject, @unchecked Sendable {
                 do {
                     let url = try await channel.resolveStreamURL()
                     await MainActor.run {
+                        // 기다리는 사이 정지됐으면 열지 않는다
+                        guard !self.isPaused else {
+                            self.pendingTargets[channel] = nil
+                            self.loading.remove(channel)
+                            return
+                        }
                         let target = self.pendingTargets[channel] ?? (volume, pan)
                         self.pendingTargets[channel] = nil
                         self.startPlayback(channel: channel, url: url.absoluteString, volume: target.volume, pan: target.pan)
@@ -1243,6 +1505,10 @@ final class MpvRadioPlayer: ObservableObject, @unchecked Sendable {
     func stop(channel: RadioChannel) {
         pendingTargets[channel] = nil
         lastPanUpdate[channel] = nil
+        rawVolumes[channel] = nil
+        gains[channel] = nil
+        fades[channel] = nil
+        fadeInNext.remove(channel)
         guard let mpv = channels[channel] else { return }
         lib.destroy(mpv)
         channels[channel] = nil
@@ -1267,11 +1533,19 @@ final class MpvRadioPlayer: ObservableObject, @unchecked Sendable {
             return
         }
 
-        setVolume(mpv, volume: Double(volume * 100))
-        loadURL(mpv, url: url)
-
         channels[channel] = mpv
         currentPans[channel] = quantized
+        rawVolumes[channel] = volume
+        if fadeInNext.remove(channel) != nil {
+            let now = CFAbsoluteTimeGetCurrent()
+            gains[channel] = 0
+            fades[channel] = Fade(from: 0, to: 1, start: nil, duration: fadeInDuration, created: now)
+            startFadeTimer()
+        } else {
+            gains[channel] = 1
+        }
+        applyVolume(channel)
+        loadURL(mpv, url: url)
         print("mpv playing \(channel) ✓")
     }
 
