@@ -4,7 +4,7 @@ import AVFoundation
 // MARK: - Channel
 
 enum RadioChannel: String, CaseIterable, Identifiable, Sendable, Codable {
-    case kbsCool, mbcFM4U, sbsPower, mbcStandard, kbsRadio1
+    case kbsCool, mbcFM4U, sbsPower, mbcStandard, kbsRadio1, kbsClassic
 
     var id: String { rawValue }
 
@@ -15,6 +15,7 @@ enum RadioChannel: String, CaseIterable, Identifiable, Sendable, Codable {
         case .sbsPower: "107.7"
         case .mbcStandard: "95.9"
         case .kbsRadio1: "97.3"
+        case .kbsClassic: "93.1"
         }
     }
 
@@ -25,16 +26,19 @@ enum RadioChannel: String, CaseIterable, Identifiable, Sendable, Codable {
         case .sbsPower: "btn_1077"
         case .mbcStandard: "btn_959"
         case .kbsRadio1: "btn_973"
+        case .kbsClassic: "btn_931"
         }
     }
 
+    // 블러 색: 버튼 글자색과 같은 색상·채도에, 명도만 0.87 이상으로 끌어올린 값 (어두운 바탕에서도 번지게).
     var brandColor: Color {
         switch self {
         case .kbsCool:     Color(red: 0x33/255, green: 0xA1/255, blue: 0xDB/255)
-        case .mbcFM4U:     Color(red: 0xEB/255, green: 0x16/255, blue: 0x8F/255)
-        case .sbsPower:    Color(red: 0x92/255, green: 0x3F/255, blue: 0xFF/255)
-        case .mbcStandard: Color(red: 0xFB/255, green: 0xBD/255, blue: 0x01/255)
-        case .kbsRadio1:   Color(red: 0x42/255, green: 0xDD/255, blue: 0x00/255)
+        case .mbcFM4U:     Color(red: 0xEE/255, green: 0x05/255, blue: 0xC0/255)
+        case .sbsPower:    Color(red: 0xB2/255, green: 0x0B/255, blue: 0xFF/255)
+        case .mbcStandard: Color(red: 0xFF/255, green: 0xD0/255, blue: 0x12/255)
+        case .kbsRadio1:   Color(red: 0x43/255, green: 0xDE/255, blue: 0x00/255)
+        case .kbsClassic:  Color(red: 0xFF/255, green: 0x4A/255, blue: 0x2B/255)
         }
     }
 
@@ -50,6 +54,8 @@ enum RadioChannel: String, CaseIterable, Identifiable, Sendable, Codable {
             return try await resolveMBCPlaylist(channel: "sfm")
         case .kbsRadio1:
             return try await resolveRedirect("https://radio.bsod.kr/stream/?stn=kbs&ch=1radio")
+        case .kbsClassic:
+            return try await resolveRedirect("https://radio.bsod.kr/stream/?stn=kbs&ch=1fm")
         }
     }
 
@@ -163,7 +169,7 @@ struct ContentView: View {
         ChannelSlot(channel: .mbcFM4U,  position: CGPoint(x: 228, y: 150))
     ]
     // 초기 히든 큐 (FIFO): 선두가 먼저 나옴
-    private static let initialHiddenQueue: [RadioChannel] = [.mbcStandard, .kbsRadio1]
+    private static let initialHiddenQueue: [RadioChannel] = [.mbcStandard, .kbsRadio1, .kbsClassic]
 
     private static let persistKey = "v102State"
 
@@ -964,7 +970,7 @@ struct ContentView: View {
               let state = try? JSONDecoder().decode(PersistentState.self, from: data) else {
             return
         }
-        guard state.visibleChannels.count == 3, state.hiddenQueue.count == 2 else { return }
+        guard state.visibleChannels.count == 3 else { return }
 
         // 포지션은 저장값을 무시하고 슬롯 인덱스에 대응하는 초기 좌표로 정규화.
         var loadedSlots: [ChannelSlot] = []
@@ -982,9 +988,15 @@ struct ContentView: View {
             loadedHidden.append(ch)
         }
 
-        // 5개 채널이 중복 없이 모두 포함되어야 함
+        // 저장 이후 새로 생긴 채널(예: 93.1)은 히든 큐 끝에 붙인다
+        for ch in RadioChannel.allCases where !loadedHidden.contains(ch) && !loadedSlots.contains(where: { $0.channel == ch }) {
+            loadedHidden.append(ch)
+        }
+
+        // 모든 채널이 중복 없이 포함되어야 함
         let union = Set(loadedSlots.map { $0.channel }).union(Set(loadedHidden))
-        guard union.count == RadioChannel.allCases.count else { return }
+        guard union.count == RadioChannel.allCases.count,
+              loadedSlots.count + loadedHidden.count == union.count else { return }
 
         self.slots = loadedSlots
         self.hiddenQueue = loadedHidden
