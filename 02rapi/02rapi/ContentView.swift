@@ -176,6 +176,9 @@ struct ContentView: View {
     @State private var slots: [ChannelSlot] = Self.initialSlots
     @State private var hiddenQueue: [RadioChannel] = Self.initialHiddenQueue
     @State private var dragStart: [CGPoint?] = [nil, nil, nil]
+    // 소리원에 들어온 차례 (슬롯별). 나중에 들어온 버튼이 버튼들 중 맨 위에 그려진다.
+    @State private var entryStamp: [Int] = [0, 0, 0]
+    @State private var entryCounter = 0
 
     // 사이클링 애니메이션 상태 (슬롯별)
     @State private var slotOpacity: [Double] = [1, 1, 1]
@@ -424,11 +427,15 @@ struct ContentView: View {
                 .opacity(glassMode.isDark ? 0.5 : 1)  // 다크에선 장식 글자를 한 단계 낮춤
                 .allowsHitTesting(false)
 
-            ForEach(0..<3, id: \.self) { index in
-                channelButton(at: index)
-                    .opacity(channelsOpacity[index])
-                    .offset(y: channelsRise[index])
-                    .allowsHitTesting(channelsOpacity[index] == 1)
+            // 버튼끼리만 순서를 매기도록 따로 묶는다 (zIndex 가 업데이트·핀 버튼 위로 넘어가지 않게)
+            ZStack {
+                ForEach(0..<3, id: \.self) { index in
+                    channelButton(at: index)
+                        .opacity(channelsOpacity[index])
+                        .offset(y: channelsRise[index])
+                        .allowsHitTesting(channelsOpacity[index] == 1)
+                        .zIndex(Double(entryStamp[index]))
+                }
             }
 
             if updatePhase != .none {
@@ -457,6 +464,13 @@ struct ContentView: View {
         .modifier(WindowBackground(mode: glassMode))
         .ignoresSafeArea()
         .onAppear { loadPersistedState() }
+        .onChange(of: slots) { old, new in
+            // 밖에서 소리원으로 들어오거나, 안에 있던 자리에 다른 채널이 들어오면 새로 들어온 것으로 친다
+            for i in new.indices where isInSound(new[i]) && !(isInSound(old[i]) && old[i].channel == new[i].channel) {
+                entryCounter += 1
+                entryStamp[i] = entryCounter
+            }
+        }
         .task { await startUpdateFlow() }
         .onChange(of: updatePhase) { old, new in
             if new == .installing {
@@ -943,6 +957,10 @@ struct ContentView: View {
         } else {
             radio.stop(channel: channel)
         }
+    }
+
+    private func isInSound(_ slot: ChannelSlot) -> Bool {
+        dist(refPoint(slot.position), soundCenter) <= soundRadius
     }
 
     private func refPoint(_ btnPos: CGPoint) -> CGPoint {
