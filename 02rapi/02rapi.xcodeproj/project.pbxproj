@@ -140,7 +140,7 @@
 					"@executable_path/../Frameworks",
 				);
 				MACOSX_DEPLOYMENT_TARGET = 26.0;
-				MARKETING_VERSION = 1.1.7;
+				MARKETING_VERSION = 1.1.8;
 				PRODUCT_BUNDLE_IDENTIFIER = com.artbrain.02rapi;
 				PRODUCT_NAME = 02rapi;
 				PROVISIONING_PROFILE_SPECIFIER = "";
@@ -168,7 +168,7 @@
 					"@executable_path/../Frameworks",
 				);
 				MACOSX_DEPLOYMENT_TARGET = 26.0;
-				MARKETING_VERSION = 1.1.7;
+				MARKETING_VERSION = 1.1.8;
 				PRODUCT_BUNDLE_IDENTIFIER = com.artbrain.02rapi;
 				PRODUCT_NAME = 02rapi;
 				PROVISIONING_PROFILE_SPECIFIER = "";
